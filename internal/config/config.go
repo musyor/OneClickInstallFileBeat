@@ -36,8 +36,9 @@ type InputConfig struct {
 	Multiline     *Multiline    `yaml:"multiline,omitempty"`
 }
 
+// Processor 表示一个处理器
 type Processor struct {
-	AddHostMetadata map[string]interface{} `yaml:"add_host_metadata,omitempty"`
+	AddHostMetadata struct{} `yaml:"add_host_metadata"`
 }
 
 type KafkaConfig struct {

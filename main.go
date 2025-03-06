@@ -80,22 +80,20 @@ func main() {
 	app := &cli.App{
 		Name:  "fbctl",
 		Usage: "Filebeat Configuration management Tool",
-
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "config",
 				Value: "/etc/filebeat/filebeat.yml",
 			},
 		},
-		//定义命令
 		Commands: []*cli.Command{
 			{
-				Name:  "init",
-				Usage: "Initialize new configuration",
+				Name:    "init",
+				Aliases: []string{"i"},
+				Usage:   "Initialize new configuration",
 				Action: func(c *cli.Context) error {
 					return initConfig(c.String("config"))
 				},
-				Aliases: []string{"i"},
 			},
 			{
 				Name:  "add-input",
@@ -105,7 +103,7 @@ func main() {
 				},
 				Flags: []cli.Flag{
 					&cli.StringSliceFlag{
-						Name:     "path",
+						Name:     "paths",
 						Usage:    "Log file path",
 						Required: true,
 					},
@@ -122,18 +120,10 @@ func main() {
 				},
 			},
 			{
-				Name:  "remove-input",
-				Usage: "Remove log input",
-				Flags: []cli.Flag{
-					&cli.StringSliceFlag{
-						Name:     "paths",
-						Usage:    "Log file paths (comma separated)",
-						Required: true,
-					},
-				},
-				Action: func(c *cli.Context) error {
-					return removeInput(c)
-				},
+				Name:   "remove-input",
+				Usage:  "Remove log input",
+				Flags:  []cli.Flag{},
+				Action: func(c *cli.Context) error { return removeInput(c) },
 			},
 			{
 				Name:  "update-input",
@@ -154,50 +144,61 @@ func main() {
 					return updateInput(c)
 				},
 			},
+			{
+				Name:  "install",
+				Usage: "Install Filebeat, initialize config, and start it",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:        "start",
+						Aliases:     []string{"s"},
+						DefaultText: "true",
+						Value:       true,
+						Usage:       "Whether to start Filebeat after installation",
+					},
+				},
+				Action: func(c *cli.Context) error {
+					err := installFilebeat()
+					if err != nil {
+						logger.Fatal("Failed to install Filebeat", err)
+						return err
+					}
+
+					err = initConfig(c.String("config"))
+					if err != nil {
+						logger.Fatal("Failed to initialize config", zap.Error(err))
+						return err
+					}
+
+					if c.Bool("start") {
+						err = startFilebeatWithSystemctl()
+						if err != nil {
+							logger.Error("Failed to start Filebeat with systemctl", err)
+							return err
+						}
+					}
+
+					return nil
+				},
+			},
+			{
+				Name:  "start-filebeat",
+				Usage: "Start Filebeat with systemctl",
+				Action: func(c *cli.Context) error {
+					return startFilebeatWithSystemctl()
+				},
+			},
 		},
 	}
 
-	//初始化日志记录器
-	logger.Info("Filebeat Manager stated")
+	logger.Info("Filebeat Manager started")
 
-	// 安装 Filebeat
-	if os.Getenv("INSTALL_FILEBEAT") == "true" {
-		err := installFilebeat()
-		if err != nil {
-			logger.Fatal("Failed to install Filebeat", zap.Error(err))
-		}
-	}
-
-	// 启动 Filebeat
-	if os.Getenv("START_FILEBEAT") == "true" {
-		cmd := exec.Command("filebeat", "-e")
-		err := cmd.Run()
-		if err != nil {
-			logger.Fatal("Failed to start Filebeat", zap.Error(err))
-		}
-	}
-
-	// 验证配置文件
-	configPath := "./filebeat.yml"
-	cfg, err := config.ReadConfig(configPath)
+	err := app.Run(os.Args)
 	if err != nil {
-		logger.Fatal("Failed to read config", zap.Error(err))
+		logger.Fatal("Application failed", zap.Error(err))
 	}
-
-	err = config.ValidateConfig(cfg)
-	if err != nil {
-		logger.Fatal("Invalid config", zap.Error(err))
-	}
-
-	err = app.Run(os.Args)
-	if err != nil {
-		logger.Fatal("Application failed", err)
-	}
-
 }
 
 func initConfig(path string) error {
-	//创建默认配置
 	defaultCfg := &config.FilebeatConfig{
 		Filebeat: struct {
 			Inputs     []config.InputConfig `yaml:"inputs"`
@@ -231,7 +232,7 @@ func initConfig(path string) error {
 			},
 			Processors: []config.Processor{
 				{
-					AddHostMetadata: map[string]interface{}{},
+					AddHostMetadata: struct{}{},
 				},
 			},
 		},
@@ -276,11 +277,11 @@ func initConfig(path string) error {
 
 	err = config.WriteConfig(defaultCfg, path)
 	if err != nil {
-		logger.Error("failed to write config", err)
+		logger.Fatal("Failed to write config", zap.Error(err))
 		return err
 	}
 
-	logger.Info("Configuration initialized successfully", err)
+	logger.Info("Configuration initialized successfully", zap.String("config_path", path))
 	return nil
 }
 
@@ -288,13 +289,11 @@ func removeInput(c *cli.Context) error {
 	configPath := c.String("config")
 	paths := c.StringSlice("paths")
 
-	// 读取现有配置
 	cfg, err := config.ReadConfig(configPath)
 	if err != nil {
 		logger.Fatal("Failed to read config", err)
 	}
 
-	// 删除指定路径的输入
 	newInputs := []config.InputConfig{}
 	for _, input := range cfg.Filebeat.Inputs {
 		match := false
@@ -311,7 +310,6 @@ func removeInput(c *cli.Context) error {
 
 	cfg.Filebeat.Inputs = newInputs
 
-	// 保存配置文件
 	err = config.WriteConfig(cfg, configPath)
 	if err != nil {
 		logger.Fatal("Failed to write config", err)
@@ -335,13 +333,11 @@ func updateInput(c *cli.Context) error {
 	oldPaths := c.StringSlice("old-paths")
 	newPaths := c.StringSlice("new-paths")
 
-	// 读取现有配置
 	cfg, err := config.ReadConfig(configPath)
 	if err != nil {
 		logger.Fatal("Failed to read config", err)
 	}
 
-	// 更新指定路径的输入
 	for i, input := range cfg.Filebeat.Inputs {
 		for _, oldPath := range oldPaths {
 			if contains(input.Paths, oldPath) {
@@ -351,7 +347,6 @@ func updateInput(c *cli.Context) error {
 		}
 	}
 
-	// 保存配置文件
 	err = config.WriteConfig(cfg, configPath)
 	if err != nil {
 		logger.Fatal("Failed to write config", err)
@@ -365,7 +360,6 @@ func installFilebeat() error {
 	osType := runtime.GOOS
 	switch osType {
 	case "linux":
-		// 检测是否是基于 RPM 的系统
 		if isRPMSystem() {
 			return installRPM()
 		} else {
@@ -377,7 +371,6 @@ func installFilebeat() error {
 }
 
 func isRPMSystem() bool {
-	// 简单检测是否存在 RPM 包管理器
 	_, err := exec.LookPath("rpm")
 	return err == nil
 }
@@ -415,5 +408,13 @@ func installDEB() error {
 		return fmt.Errorf("failed to install DEB package: %w", err)
 	}
 
+	return nil
+}
+
+func startFilebeatWithSystemctl() error {
+	cmd := exec.Command("systemctl", "restart", "filebeat")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start Filebeat with systemctl: %w", err)
+	}
 	return nil
 }
